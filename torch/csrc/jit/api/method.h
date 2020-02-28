@@ -2,6 +2,7 @@
 #include <ATen/core/ivalue.h>
 #include <ATen/core/stack.h>
 #include <torch/csrc/jit/api/function.h>
+#include <torch/csrc/jit/api/function_impl.h>
 
 namespace torch {
 namespace jit {
@@ -32,7 +33,7 @@ struct TORCH_API Method {
       const Kwargs& kwargs = Kwargs());
 
   std::shared_ptr<Graph> graph() const {
-    return function_->graph();
+    return dynamic_cast<FunctionImpl*>(function_)->graph();
   }
 
   const std::string& name() const {
@@ -44,7 +45,7 @@ struct TORCH_API Method {
   }
 
   GraphExecutor& get_executor() {
-    return function_->get_executor();
+    return dynamic_cast<FunctionImpl*>(function_)->get_executor();
   }
 
   Function& function() const {

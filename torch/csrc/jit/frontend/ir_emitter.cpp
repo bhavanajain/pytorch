@@ -1,10 +1,13 @@
-#include <torch/csrc/jit/frontend/ir_emitter.h>
 #include <c10/util/Exception.h>
 #include <c10/util/StringUtil.h>
-#include <torch/csrc/jit/testing/hooks_for_testing.h>
-#include <torch/csrc/jit/runtime/interpreter.h>
+#include <torch/csrc/jit/api/function_impl.h>
+#include <torch/csrc/jit/frontend/canonicalize_modified_loop.h>
+#include <torch/csrc/jit/frontend/convert_to_ssa.h>
+#include <torch/csrc/jit/frontend/ir_emitter.h>
+#include <torch/csrc/jit/frontend/parser.h>
+#include <torch/csrc/jit/frontend/schema_matching.h>
+#include <torch/csrc/jit/frontend/script_type_parser.h>
 #include <torch/csrc/jit/ir/ir.h>
-#include <torch/csrc/jit/runtime/operator.h>
 #include <torch/csrc/jit/passes/canonicalize.h>
 #include <torch/csrc/jit/passes/constant_pooling.h>
 #include <torch/csrc/jit/passes/constant_propagation.h>
@@ -13,11 +16,9 @@
 #include <torch/csrc/jit/passes/inliner.h>
 #include <torch/csrc/jit/passes/lift_closures.h>
 #include <torch/csrc/jit/passes/lower_tuples.h>
-#include <torch/csrc/jit/frontend/canonicalize_modified_loop.h>
-#include <torch/csrc/jit/frontend/convert_to_ssa.h>
-#include <torch/csrc/jit/frontend/parser.h>
-#include <torch/csrc/jit/frontend/schema_matching.h>
-#include <torch/csrc/jit/frontend/script_type_parser.h>
+#include <torch/csrc/jit/runtime/interpreter.h>
+#include <torch/csrc/jit/runtime/operator.h>
+#include <torch/csrc/jit/testing/hooks_for_testing.h>
 
 #include <torch/csrc/jit/ir/constants.h>
 
@@ -216,7 +217,7 @@ static std::shared_ptr<MagicMethod> makeMagic(
 
 struct Environment {
   Environment(
-      Function& method,
+      FunctionImpl& method,
       ResolverPtr resolver,
       Block* b,
       std::shared_ptr<Environment> next = nullptr)
@@ -225,7 +226,7 @@ struct Environment {
         b(b),
         next(std::move(next)) {}
 
-  Function& method;
+  FunctionImpl& method;
   ResolverPtr resolver;
   std::unordered_map<std::string, std::function<std::string()>> error_messages;
   Block* b;
@@ -588,7 +589,7 @@ struct to_ir {
       const Def& def,
       ResolverPtr resolver_,
       const Self* self,
-      Function& method) // method being constructed
+      FunctionImpl& method) // method being constructed
       : method(method),
         graph(method.graph()),
         resolver(std::move(resolver_)),
@@ -621,7 +622,7 @@ struct to_ir {
   }
 
  private:
-  Function& method;
+  FunctionImpl& method;
   std::shared_ptr<Graph> graph;
   ResolverPtr resolver;
   std::unordered_map<int64_t, Value*> integral_constants;
@@ -3323,7 +3324,8 @@ struct FunctionResolver : public Resolver {
       const SourceRange& loc) override {
     auto it = functionTable_.find(name);
     if (it != functionTable_.end()) {
-      return std::make_shared<FunctionValue>(it->second);
+      return std::make_shared<FunctionValue>(
+          dynamic_cast<FunctionImpl*>(it->second));
     }
     return otherResolver_->resolveValue(name, m, loc);
   }
@@ -3406,7 +3408,7 @@ std::unique_ptr<Function> CompilationUnit::define(
       call_name = atoms.at(atoms.size() - 2) + "." + atoms.at(atoms.size() - 1);
     }
     ErrorReport::CallStack call(call_name);
-    to_ir(def, _resolver, self, method);
+    to_ir(def, _resolver, self, dynamic_cast<FunctionImpl&>(method));
   };
   auto name = prefix ? QualifiedName(*prefix, def.name().name())
                      : QualifiedName(def.name().name());
@@ -3417,7 +3419,7 @@ std::unique_ptr<Function> CompilationUnit::define(
       name = mangle(name);
     }
   }
-  auto fn = torch::make_unique<Function>(
+  auto fn = torch::make_unique<FunctionImpl>(
       std::move(name), std::make_shared<Graph>(), creator);
   if (self) {
     // Register this as a method on `self`'s type
